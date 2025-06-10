@@ -2,7 +2,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
 from services.ner_service import NERService
+from services.financial_ner_service import FinancialNERService
 from services.std_service import StdService
+from services.financial_std_service import FinancialStdService
 from services.abbr_service import AbbrService
 from services.corr_service import CorrService
 from services.gen_service import GenService
@@ -26,8 +28,9 @@ app.add_middleware(
 )
 
 # 初始化各个服务
-ner_service = NERService()  # 命名实体识别服务
-standardization_service = StdService()  # 术语标准化服务
+ner_service = NERService()  # 医疗命名实体识别服务
+financial_ner_service = FinancialNERService()  # 金融命名实体识别服务
+standardization_service = StdService()  # 医疗术语标准化服务
 abbr_service = AbbrService()  # 缩写扩展服务
 gen_service = GenService()  # 文本生成服务
 corr_service = CorrService()  # 拼写纠正服务
@@ -78,6 +81,25 @@ class TextInput(BaseInputModel):
     embeddingOptions: EmbeddingOptions = Field(
         default_factory=EmbeddingOptions,
         description="向量数据库配置选项"
+    )
+    
+class FinancialEmbeddingOptions(BaseModel):
+    """金融向量数据库配置选项"""
+    provider: Literal["huggingface", "openai", "bedrock"] = Field(
+        default="huggingface",
+        description="向量数据库提供商"
+    )
+    model: str = Field(
+        default="BAAI/bge-m3",
+        description="嵌入模型名称"
+    )
+    dbName: str = Field(
+        default="financial_bge_m3",
+        description="向量数据库名称"
+    )
+    collectionName: str = Field(
+        default="financial_concepts",
+        description="集合名称"
     )
 
 class AbbrInput(BaseInputModel):
@@ -165,37 +187,75 @@ class GenInput(BaseInputModel):
 async def standardization(input: TextInput):
     try:
         # 记录请求信息
-        logger.info(f"Received request: text={input.text}, options={input.options}, embeddingOptions={input.embeddingOptions}")
+        logger.info(f"Received request: domain={input.domain}, text={input.text}, options={input.options}")
 
-        # 配置术语类型
-        all_medical_terms = input.options.pop('allMedicalTerms', False)
-        term_types = {'allMedicalTerms': all_medical_terms}
+        # 根据领域选择相应的服务
+        if input.domain == "financial":
+            # 金融领域处理
+            all_financial_terms = input.options.pop('allFinancialTerms', False)
+            term_types = {'allFinancialTerms': all_financial_terms}
+            
+            # 添加具体的金融术语类型
+            for term_type in ['currency', 'ratio', 'instrument', 'institution', 'indicator', 'accounting']:
+                if input.options.get(term_type, False):
+                    term_types[term_type] = True
 
-        # 进行命名实体识别
-        ner_results = ner_service.process(input.text, input.options, term_types)
+            # 进行金融实体识别
+            ner_results = financial_ner_service.process(input.text, input.options, term_types)
 
-        # 初始化标准化服务
-        standardization_service = StdService(
-            provider=input.embeddingOptions.provider,
-            model=input.embeddingOptions.model,
-            db_path=f"db/{input.embeddingOptions.dbName}.db",
-            collection_name=input.embeddingOptions.collectionName
-        )
+            # 初始化金融标准化服务
+            financial_std_service = FinancialStdService(
+                provider=input.embeddingOptions.provider,
+                model=input.embeddingOptions.model,
+                db_path=f"db/{input.embeddingOptions.dbName}.db",
+                collection_name=input.embeddingOptions.collectionName
+            )
 
-        # 获取识别到的实体
-        entities = ner_results.get('entities', [])
-        if not entities:
-            return {"message": "No medical terms have been recognized", "standardized_terms": []}
+            # 获取识别到的实体
+            entities = ner_results.get('entities', [])
+            if not entities:
+                return {"message": "No financial terms have been recognized", "standardized_terms": []}
 
-        # 标准化每个实体
-        standardized_results = []
-        for entity in entities:
-            std_result = standardization_service.search_similar_terms(entity['word'])
-            standardized_results.append({
-                "original_term": entity['word'],
-                "entity_group": entity['entity_group'],
-                "standardized_results": std_result
-            })
+            # 标准化每个实体
+            standardized_results = []
+            for entity in entities:
+                std_result = financial_std_service.search_similar_terms(entity['word'])
+                standardized_results.append({
+                    "original_term": entity['word'],
+                    "entity_group": entity['entity_group'],
+                    "standardized_results": std_result
+                })
+
+        else:
+            # 医疗领域处理（原有逻辑）
+            all_medical_terms = input.options.pop('allMedicalTerms', False)
+            term_types = {'allMedicalTerms': all_medical_terms}
+
+            # 进行命名实体识别
+            ner_results = ner_service.process(input.text, input.options, term_types)
+
+            # 初始化标准化服务
+            standardization_service = StdService(
+                provider=input.embeddingOptions.provider,
+                model=input.embeddingOptions.model,
+                db_path=f"db/{input.embeddingOptions.dbName}.db",
+                collection_name=input.embeddingOptions.collectionName
+            )
+
+            # 获取识别到的实体
+            entities = ner_results.get('entities', [])
+            if not entities:
+                return {"message": "No medical terms have been recognized", "standardized_terms": []}
+
+            # 标准化每个实体
+            standardized_results = []
+            for entity in entities:
+                std_result = standardization_service.search_similar_terms(entity['word'])
+                standardized_results.append({
+                    "original_term": entity['word'],
+                    "entity_group": entity['entity_group'],
+                    "standardized_results": std_result
+                })
 
         return {
             "message": f"{len(entities)} medical terms have been recognized and standardized",
@@ -210,8 +270,26 @@ async def standardization(input: TextInput):
 @app.post("/api/ner")
 async def ner(input: TextInput):
     try:
-        logger.info(f"Received NER request: text={input.text}, options={input.options}, termTypes={input.termTypes}")
-        results = ner_service.process(input.text, input.options, input.termTypes)
+        logger.info(f"Received NER request: domain={input.domain}, text={input.text}, options={input.options}")
+        
+        # 根据领域选择相应的NER服务
+        if input.domain == "financial":
+            # 金融领域NER
+            all_financial_terms = input.options.pop('allFinancialTerms', False)
+            term_types = {'allFinancialTerms': all_financial_terms}
+            
+            # 添加具体的金融术语类型
+            for term_type in ['currency', 'ratio', 'instrument', 'institution', 'indicator', 'accounting']:
+                if input.options.get(term_type, False):
+                    term_types[term_type] = True
+            
+            results = financial_ner_service.process(input.text, input.options, term_types)
+        else:
+            # 医疗领域NER（原有逻辑）
+            all_medical_terms = input.options.pop('allMedicalTerms', False)
+            term_types = {'allMedicalTerms': all_medical_terms}
+            results = ner_service.process(input.text, input.options, term_types)
+        
         return results
     except Exception as e:
         logger.error(f"Error in NER processing: {str(e)}")

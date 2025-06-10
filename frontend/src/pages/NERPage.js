@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { TextInput } from '../components/shared/ModelOptions';
+import { getDomainFromUrl, getDomainConfig } from '../utils/domainUtils';
 
 const color_map = {
   'DATE': "#FF9800", // 原色
@@ -48,29 +49,35 @@ const color_map = {
 };
 
 const NERPage = () => {
+  const [domain, setDomain] = useState(getDomainFromUrl());
+  const [domainConfig, setDomainConfig] = useState(getDomainConfig(domain));
   const [input, setInput] = useState('');
   const [result, setResult] = useState('');
   const [coloredResult, setColoredResult] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [termTypes, setTermTypes] = useState({
-    symptom: false,
-    disease: false,
-    therapeuticProcedure: false,
-    allMedicalTerms: false,
-  });
+  const [termTypes, setTermTypes] = useState(domainConfig.termTypes);
   const [options, setOptions] = useState({
     combineBioStructure: false,
   });
 
+  useEffect(() => {
+    const currentDomain = getDomainFromUrl();
+    setDomain(currentDomain);
+    const config = getDomainConfig(currentDomain);
+    setDomainConfig(config);
+    setTermTypes(config.termTypes);
+  }, []);
+
   const handleTermTypeChange = (e) => {
     const { name, checked } = e.target;
-    if (name === 'allMedicalTerms') {
-      setTermTypes({
-        symptom: false,
-        disease: false,
-        therapeuticProcedure: false,
-        allMedicalTerms: checked,
+    const allTermsKey = domain === 'financial' ? 'allFinancialTerms' : 'allMedicalTerms';
+    
+    if (name === allTermsKey) {
+      const newTermTypes = { ...domainConfig.termTypes };
+      Object.keys(newTermTypes).forEach(key => {
+        newTermTypes[key] = key === allTermsKey ? checked : false;
       });
+      setTermTypes(newTermTypes);
     } else {
       setTermTypes({ ...termTypes, [name]: checked });
     }
@@ -88,7 +95,13 @@ const NERPage = () => {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ text: input, options, termTypes }),
+        body: JSON.stringify({ 
+          text: input, 
+          options, 
+          termTypes,
+          domain,
+          embeddingOptions: domainConfig.embeddingOptions
+        }),
       });
       const data = await response.json();
       setResult(JSON.stringify(data, null, 2));
@@ -106,18 +119,18 @@ const NERPage = () => {
     entities.sort((a, b) => b.start - a.start);
     
     for (const entity of entities) {
-      const color = color_map[entity.entity_group] || '#000000';
+      const color = domainConfig.colorMap[entity.entity_group] || '#666666';
       let highlightedEntity;
       
       if (entity.entity_group === 'COMBINED_BIO_SYMPTOM' && entity.original_entities) {
         const [bioStructure, symptom] = entity.original_entities;
-        highlightedEntity = `<span style="background-color: ${color}; padding: 2px; border-radius: 3px;">
-          <span style="border-bottom: 2px solid ${color_map[bioStructure.entity_group]};">${bioStructure.word}</span> 
-          <span style="border-bottom: 2px solid ${color_map[symptom.entity_group]};">${symptom.word}</span>
+        highlightedEntity = `<span style="background-color: ${color}; padding: 2px; border-radius: 3px; color: white;">
+          <span style="border-bottom: 2px solid ${domainConfig.colorMap[bioStructure.entity_group]};">${bioStructure.word}</span> 
+          <span style="border-bottom: 2px solid ${domainConfig.colorMap[symptom.entity_group]};">${symptom.word}</span>
           <sub>${bioStructure.entity_group}+${symptom.entity_group}</sub>
         </span>`;
       } else {
-        highlightedEntity = `<span style="background-color: ${color}; padding: 2px; border-radius: 3px;">
+        highlightedEntity = `<span style="background-color: ${color}; padding: 2px; border-radius: 3px; color: white;">
           ${entity.word}<sub>${entity.entity_group}</sub>
         </span>`;
       }
@@ -130,67 +143,75 @@ const NERPage = () => {
 
   return (
     <div className="max-w-2xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">医疗命名实体识别 🏥</h1>
+      <h1 className="text-3xl font-bold mb-6">{domainConfig.title} {domainConfig.icon}</h1>
       <div className="bg-white shadow-md rounded-lg p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">输入医疗文本</h2>
+        <h2 className="text-xl font-semibold mb-4">输入文本</h2>
         <TextInput
           value={input}
           onChange={(e) => setInput(e.target.value)}
           rows={4}
-          placeholder="请输入需要进行命名实体识别的医疗文本..."
+          placeholder={domainConfig.placeholder}
         />
         
-        <h3 className="text-lg font-semibold mb-2">医疗术语类型</h3>
+        <h3 className="text-lg font-semibold mb-2">术语类型</h3>
         <div className="mb-4">
-          <label>
-            <input
-              type="checkbox"
-              name="symptom"
-              checked={termTypes.symptom}
-              onChange={handleTermTypeChange}
-            />
-            症状
-          </label>
-          <label className="ml-4">
-            <input
-              type="checkbox"
-              name="disease"
-              checked={termTypes.disease}
-              onChange={handleTermTypeChange}
-            />
-            疾病
-          </label>
-          <label className="ml-4">
-            <input
-              type="checkbox"
-              name="therapeuticProcedure"
-              checked={termTypes.therapeuticProcedure}
-              onChange={handleTermTypeChange}
-            />
-            治疗程序
-          </label>
-          <label className="ml-4">
-            <input
-              type="checkbox"
-              name="allMedicalTerms"
-              checked={termTypes.allMedicalTerms}
-              onChange={handleTermTypeChange}
-            />
-            所有医疗术语
-          </label>
+          {Object.entries(domainConfig.termTypeLabels).map(([key, label]) => (
+            <label key={key} className="mr-4 mb-2 inline-block">
+              <input
+                type="checkbox"
+                name={key}
+                checked={termTypes[key] || false}
+                onChange={handleTermTypeChange}
+                className="mr-1"
+              />
+              {label}
+            </label>
+          ))}
         </div>
 
-        <h3 className="text-lg font-semibold mb-2">选项</h3>
-        <div className="mb-4">
-          <label>
-            <input
-              type="checkbox"
-              name="combineBioStructure"
-              checked={options.combineBioStructure}
-              onChange={handleOptionChange}
-            />
-            合并生物结构和症状
-          </label>
+        {domain === 'medical' && (
+          <>
+            <h3 className="text-lg font-semibold mb-2">选项</h3>
+            <div className="mb-4">
+              <label>
+                <input
+                  type="checkbox"
+                  name="combineBioStructure"
+                  checked={options.combineBioStructure}
+                  onChange={handleOptionChange}
+                  className="mr-1"
+                />
+                合并生物结构和症状
+              </label>
+            </div>
+          </>
+        )}
+        
+        {/* 示例文本 */}
+        <div className="mb-4 p-3 bg-gray-50 rounded">
+          <h4 className="font-medium mb-2">示例文本：</h4>
+          <div className="text-sm text-gray-600">
+            {domain === 'financial' ? (
+              <p>
+                "苹果公司第三季度营收为 890 亿美元，同比增长 8%。净利润率达到 23.5%，ROE 为 15.2%。
+                公司计划在 Q4 发行 10 亿美元的债券，用于扩张业务。分析师认为 P/E 比率 28.5 略显偏高。"
+              </p>
+            ) : (
+              <p>
+                "患者主诉头痛伴恶心呕吐3天，既往有高血压病史。体格检查：血压150/90mmHg，心率88次/分。
+                建议进行头颅CT检查，排除颅内病变。"
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => setInput(domain === 'financial' 
+              ? "苹果公司第三季度营收为 890 亿美元，同比增长 8%。净利润率达到 23.5%，ROE 为 15.2%。公司计划在 Q4 发行 10 亿美元的债券，用于扩张业务。分析师认为 P/E 比率 28.5 略显偏高。"
+              : "患者主诉头痛伴恶心呕吐3天，既往有高血压病史。体格检查：血压150/90mmHg，心率88次/分。建议进行头颅CT检查，排除颅内病变。"
+            )}
+            className="mt-2 text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600"
+          >
+            使用示例
+          </button>
         </div>
 
         <button
